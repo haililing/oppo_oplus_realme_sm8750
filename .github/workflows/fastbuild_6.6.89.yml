@@ -6,7 +6,7 @@ env:
   KERNEL_VERSION: '6.6'
   SUB_VERSION: '89'
   KERNEL_NAME: 'android15-8-g29d86c5fc9dd-abogki428889875-4k'
-  CCACHE_KEY: ccache-ecsv3-6.6.89
+  CCACHE_KEY: ccache-ecsv4-6.6.89
 
 on:
   workflow_dispatch:
@@ -28,14 +28,10 @@ on:
         type: boolean
         default: 'true'
       kpm_enable:
-        description: '是否开启kpm(builtin-使用(re)sukisu内置kpm, kpn-使用独立kpm实现(支持任意KSU/面具环境); 不需要可保持默认关闭)'
+        description: '是否开启kpm(使用KpatchNext独立实现kpm(支持任意KSU/面具环境); 不需要可保持默认关闭)'
         required: true
-        type: choice
+        type: boolean
         default: 'false'
-        options:
-          - 'false'
-          - 'builtin'
-          - 'kpn'
       lz4_enable:
         description: '是否安装 lz4 1.10.0+zstd 1.5.7 补丁'
         required: true
@@ -368,9 +364,6 @@ jobs:
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
-          if [[ ${{ github.event.inputs.kpm_enable }} == 'builtin' && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "resukisu" ) ]]; then
-            echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
-          fi
           if [[ "${{ github.event.inputs.susfs_enable }}" == "false" ]]; then
             echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
           fi
@@ -390,6 +383,10 @@ jobs:
           sed -i 's/check_defconfig//' ./common/build.config.gki
           #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
           echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
+          # 应用 CVE_2026_43499 修复补丁
+          cd common
+          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/cve-2026-43499-rtmutex-6.6.patch
+          patch -p1 -F 3 < cve-2026-43499-rtmutex-6.6.patch
           
       - name: 启用网络功能增强优化配置
         if: inputs.better_net
@@ -486,6 +483,7 @@ jobs:
             # 开启 Droidspaces 容器所需内核支持
             echo "CONFIG_PID_NS=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_IPC_NS=y" >> ./arch/arm64/configs/gki_defconfig
+            echo "CONFIG_USER_NS=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_SYSVIPC=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_DEVTMPFS=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_NAMESPACES=y" >> ./arch/arm64/configs/gki_defconfig
@@ -651,26 +649,16 @@ jobs:
           key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ github.ref_name }}
          
       - name: 应用KPM并修补内核
+        if: inputs.kpm_enable
         run: |
-          if [[ ${{ github.event.inputs.kpm_enable }} == 'builtin' && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "resukisu" ) ]]; then
-            echo "正在应用KPM并修补内核..."
-            cd kernel_workspace/common/out/arch/arm64/boot
-            curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/latest/download/patch_linux
-            chmod +x patch_linux
-            ./patch_linux
-            rm -f Image
-            mv oImage Image
-          fi
-          if [[ ${{ github.event.inputs.kpm_enable }} == 'kpn' ]]; then
-            echo "正在应用KP-N并修补内核..."
-            cd kernel_workspace/common/out/arch/arm64/boot
-            wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kptools-linux
-            wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kpimg-linux
-            chmod +x ./kptools-linux
-            ./kptools-linux -p -i ./Image -k ./kpimg-linux -o ./oImage
-            rm -f Image
-            mv oImage Image
-          fi
+          echo "正在应用KP-N并修补内核..."
+          cd kernel_workspace/common/out/arch/arm64/boot
+          wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kptools-linux
+          wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kpimg-linux
+          chmod +x ./kptools-linux
+          ./kptools-linux -p -i ./Image -k ./kpimg-linux -o ./oImage
+          rm -f Image
+          mv oImage Image
           
       - name: 克隆 AnyKernel3 并打包
         id: create_zip
@@ -698,7 +686,7 @@ jobs:
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
             wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip
           fi
-          if [[ ${{ github.event.inputs.kpm_enable }} == 'kpn' ]]; then
+          if [[ ${{ github.event.inputs.kpm_enable }} == 'true' ]]; then
             wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
           fi
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
